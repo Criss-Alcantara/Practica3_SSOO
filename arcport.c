@@ -5,17 +5,19 @@
 #include <unistd.h>
 
 #define NUM_TRACKS 1 /* Funcionalidad adicional no implementada */
-#define DELAY 0.5 /*Sleeps cortos para pruebas*/
+#define DELAY 1.0 /*Sleeps cortos para pruebas*/
 
 pthread_cond_t no_lleno; /* controla el llenado del buffer */
 pthread_cond_t no_vacio; /* controla el vaciado del buffer */
-pthread_cond_t fin_aterrizajes; /* controla que se terminen de procesar vuelos por el radar */
+
 
 pthread_mutex_t mutex_buffer;
 
 pthread_mutex_t mutex_id_creacion;
 int id = -1;  /* Variable sera compartida, usara secciones criticas*/
-int last_id = -1;
+int siguiente = 0;
+
+pthread_mutex_t mutex_insercion;
 pthread_cond_t insertado_jefe; /* controla el llenado del buffer */
 pthread_cond_t insertado_radar; /* controla el vaciado del buffer */
 
@@ -68,7 +70,7 @@ int main(int argc, char ** argv) {
 
   /* Comprobar los valores de los argumentos */
   if (max_buffer <= 0){
-    printf ("ERROR el tamaño del buffer debe ser mayor que 0.\n");
+    printf ("ERROR el tamano del buffer debe ser mayor que 0.\n");
     exit (-1);
   }
 
@@ -123,6 +125,7 @@ int main(int argc, char ** argv) {
   
   pthread_mutex_init(&mutex_buffer, NULL);
   pthread_mutex_init(&mutex_id_creacion, NULL);
+  pthread_mutex_init(&mutex_insercion, NULL); 
   pthread_cond_init(&no_lleno, NULL);
   if (pthread_cond_init(&no_vacio, NULL) != 0){
     printf ("ERROR fallo al inicializar la variable condicion.\n");
@@ -145,6 +148,7 @@ int main(int argc, char ** argv) {
 
   pthread_mutex_destroy(&mutex_buffer);
   pthread_mutex_destroy(&mutex_id_creacion);
+    pthread_mutex_destroy(&mutex_insercion);
   pthread_cond_destroy(&no_lleno);
   
   if (pthread_cond_destroy(&no_vacio) != 0){
@@ -184,11 +188,14 @@ void jefe_pista (void){
     despegues[i]->id_number = id;
     despegues[i]->time_action = t_take_off;
     despegues[i]->action = 0; /* accion 0 = despegue; accion 1 = aterrizaje */
-    despegues[i]->last_flight = ((i==n_land -1)&&(ultimo >= 0))? 1 : 0;
-
+    despegues[i]->last_flight = ((i==n_take_off -1)&&(ultimo >= 0))? 1 : 0;
+    if (i==n_take_off -1) ultimo = 0;
     printf ("[TRACKBOSS] Plane with id %d checked\n",despegues[i]->id_number);
-    while (last_id != id - 1)     /* si no se ha insertado el anterior */
-      pthread_cond_wait(&insertado_radar, &mutex_id_creacion); /* se bloquea */
+    pthread_mutex_unlock (&mutex_id_creacion);
+    
+    pthread_mutex_lock (&mutex_insercion);
+    while (siguiente !=  despegues[i]->id_number)     /* si no se ha insertado el anterior */
+      pthread_cond_wait(&insertado_radar, &mutex_insercion); /* se bloquea */
     
     /* Acceso al buffer */
     pthread_mutex_lock(&mutex_buffer);
@@ -198,10 +205,10 @@ void jefe_pista (void){
     pthread_cond_signal(&no_vacio); /* El buffer no esta vacio, tiene al menos 1 elemento*/
     printf ("[TRACKBOSS] Plane with id %d ready to take off\n",despegues[i]->id_number);
     pthread_mutex_unlock(&mutex_buffer); /* Fin de la seccion critica de acceso al buffer */
-    last_id = despegues[i]->id_number;
-    pthread_cond_signal (&insertado_jefe);
-    if (i==n_take_off -1) ultimo = 0;   
-    pthread_mutex_unlock (&mutex_id_creacion);
+    
+    siguiente = despegues[i]->id_number + 1;
+    pthread_cond_signal (&insertado_jefe); 
+    pthread_mutex_unlock (&mutex_insercion);
   }
   printf ("+++++trackboss termino\n");/*debug*/
   pthread_exit(0);
@@ -219,10 +226,13 @@ void radar_aereo (void){
     aterrizajes[i]->time_action = t_land;
     aterrizajes[i]->action = 1; /* accion 0 = despegue; accion 1 = aterrizaje */
     aterrizajes[i]->last_flight = ((i==n_land -1)&&(ultimo >= 0))? 1 : 0;
-
+    if (i==n_land -1) ultimo = 1;
     printf ("[RADAR] Plane with id %d detected!\n",aterrizajes[i]->id_number);
-    while (last_id != id - 1)     /* si no se ha insertado el anterior */
-      pthread_cond_wait(&insertado_jefe, &mutex_id_creacion); /* se bloquea */
+    pthread_mutex_unlock (&mutex_id_creacion); /* Fin de creacion del avion */
+    
+    pthread_mutex_lock (&mutex_insercion);
+    while (siguiente !=  aterrizajes[i]->id_number)     /* si no se ha insertado el anterior */
+      pthread_cond_wait(&insertado_jefe, &mutex_insercion); /* se bloquea */
  
     /* Acceso al buffer */
     pthread_mutex_lock(&mutex_buffer);
@@ -232,10 +242,10 @@ void radar_aereo (void){
     pthread_cond_signal(&no_vacio); /* El buffer no esta vacio, tiene al menos 1 elemento*/
     printf ("[RADAR] Plane with id %d ready to land\n",aterrizajes[i]->id_number);
     pthread_mutex_unlock(&mutex_buffer); /* Fin de la seccion critica del buffer */
-    last_id = aterrizajes[i]->id_number;
+    
+    siguiente = aterrizajes[i]->id_number + 1;
     pthread_cond_signal (&insertado_radar);
-    if (i==n_land -1) ultimo = 1;
-    pthread_mutex_unlock (&mutex_id_creacion); /* Fin de creacion e insercion del avion */
+    pthread_mutex_unlock (&mutex_insercion);   
   }
 
   printf ("+++ fin radar\n"); /*debug*/
