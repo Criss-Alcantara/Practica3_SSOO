@@ -134,9 +134,10 @@ int main(int argc, char ** argv) {
   pthread_cond_init(&insertado_jefe, NULL);
   pthread_cond_init(&insertado_radar, NULL);
 
+  pthread_create(&th_control, NULL,(void *) torre_control, NULL);
   pthread_create(&th_jefe, NULL,(void *) jefe_pista, NULL);
   pthread_create(&th_radar, NULL,(void *) radar_aereo, NULL);
-  pthread_create(&th_control, NULL,(void *) torre_control, NULL);
+  
   
 
   pthread_join(th_jefe, NULL);
