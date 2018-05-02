@@ -5,7 +5,6 @@
 #include <unistd.h>
 
 #define NUM_TRACKS 1 /* Funcionalidad adicional no implementada */
-#define DELAY 1.0 /*Sleeps cortos para pruebas*/
 
 pthread_cond_t no_lleno; /* controla el llenado del buffer */
 pthread_cond_t no_vacio; /* controla el vaciado del buffer */
@@ -15,13 +14,13 @@ pthread_mutex_t mutex_buffer;
 
 pthread_mutex_t mutex_id_creacion;
 int id = -1;  /* Variable sera compartida, usara secciones criticas*/
-int siguiente = 0;
+int ultimo = -1; /* Variable sera compartida, usara secciones criticas*/
 
 pthread_mutex_t mutex_insercion;
-pthread_cond_t insertado_jefe; /* controla el llenado del buffer */
-pthread_cond_t insertado_radar; /* controla el vaciado del buffer */
+int siguiente = 0; /* Variable gobal, id del siguiente avior a guardar en la cola */
 
-int ultimo = -1; /* Variable sera compartida, usara secciones criticas*/
+pthread_cond_t insertado_jefe; /* controla la insercion en orden por el jefe de pista */
+pthread_cond_t insertado_radar; /* controla la insercion en orden por el radar aereo */
 
 pthread_t th_jefe, th_radar, th_control;
 
@@ -85,9 +84,7 @@ int main(int argc, char ** argv) {
   }
 
   print_banner();
-  
-  printf ("n_takeoff=%d t_takeoff=%d; n_land=%d t_land=%d; buffer=%d ultimo=%d\n", n_take_off,t_take_off,n_land,t_land,max_buffer,ultimo);/*debug borrar*/
-  
+   
   queue_init (max_buffer); /* Inicializacion del buffer circular */
 
   /* Reserva de memoria para los aviones que van a despegar */
@@ -122,42 +119,82 @@ int main(int argc, char ** argv) {
     }
   }
   
+  /* Inicializacion de los mutex y variables condicion*/
+  if (pthread_mutex_init(&mutex_buffer, NULL)!= 0){
+    printf ("ERROR fallo al inicializar el mutex.\n");
+    exit (-1);
+  } 
+  if (pthread_mutex_init(&mutex_id_creacion, NULL)!= 0){
+    printf ("ERROR fallo al inicializar el mutex.\n");
+    exit (-1);
+  } 
+  if (pthread_mutex_init(&mutex_insercion, NULL) != 0){
+    printf ("ERROR fallo al inicializar el mutex.\n");
+    exit (-1);
+  } 
   
-  pthread_mutex_init(&mutex_buffer, NULL);
-  pthread_mutex_init(&mutex_id_creacion, NULL);
-  pthread_mutex_init(&mutex_insercion, NULL); 
-  pthread_cond_init(&no_lleno, NULL);
+  
+  if (pthread_cond_init(&no_lleno, NULL) != 0){
+    printf ("ERROR fallo al inicializar la variable condicion.\n");
+    exit (-1);
+  }
   if (pthread_cond_init(&no_vacio, NULL) != 0){
     printf ("ERROR fallo al inicializar la variable condicion.\n");
     exit (-1);
   }
-  pthread_cond_init(&insertado_jefe, NULL);
-  pthread_cond_init(&insertado_radar, NULL);
+  if (pthread_cond_init(&insertado_jefe, NULL)!= 0){
+    printf ("ERROR fallo al inicializar la variable condicion.\n");
+    exit (-1);
+  }
+  if (pthread_cond_init(&insertado_radar, NULL)!= 0){
+    printf ("ERROR fallo al inicializar la variable condicion.\n");
+    exit (-1);
+  }
 
+  /* Creacion de los hilos */
   pthread_create(&th_control, NULL,(void *) torre_control, NULL);
   pthread_create(&th_jefe, NULL,(void *) jefe_pista, NULL);
   pthread_create(&th_radar, NULL,(void *) radar_aereo, NULL);
   
   
-
+  /* Espera hasta que los hilos finalicen*/
   pthread_join(th_jefe, NULL);
   pthread_join(th_radar, NULL);
   pthread_join(th_control, NULL);
   
 
-   /* Liberacion de recursos */
+  /* Liberacion de recursos */
 
-  pthread_mutex_destroy(&mutex_buffer);
-  pthread_mutex_destroy(&mutex_id_creacion);
-    pthread_mutex_destroy(&mutex_insercion);
-  pthread_cond_destroy(&no_lleno);
+  if (pthread_mutex_destroy(&mutex_buffer)!= 0){
+    printf ("ERROR fallo al destruir el mutex.\n");
+    exit (-1);
+  }
+  if (pthread_mutex_destroy(&mutex_id_creacion)!= 0){
+    printf ("ERROR fallo al destruir el mutex.\n");
+    exit (-1);
+  }
+  if (pthread_mutex_destroy(&mutex_insercion)!= 0){
+    printf ("ERROR fallo al destruir el mutex.\n");
+    exit (-1);
+  }
   
+  if (pthread_cond_destroy(&no_lleno) != 0){
+    printf ("ERROR fallo al destruir la variable condicion.\n");
+    exit (-1);
+  }
   if (pthread_cond_destroy(&no_vacio) != 0){
     printf ("ERROR fallo al destruir la variable condicion.\n");
     exit (-1);
   }
-  pthread_cond_destroy(&insertado_jefe);
-  pthread_cond_destroy(&insertado_radar);
+
+  if (pthread_cond_destroy(&insertado_jefe) != 0){
+    printf ("ERROR fallo al destruir la variable condicion.\n");
+    exit (-1);
+  }
+  if (pthread_cond_destroy(&insertado_radar) != 0){
+    printf ("ERROR fallo al destruir la variable condicion.\n");
+    exit (-1);
+  }
 
  
   for (i=0; i<n_take_off;i++){
@@ -211,7 +248,7 @@ void jefe_pista (void){
     pthread_cond_signal (&insertado_jefe); 
     pthread_mutex_unlock (&mutex_insercion);
   }
-  printf ("+++++trackboss termino\n");/*debug*/
+
   pthread_exit(0);
 }
 
@@ -249,7 +286,6 @@ void radar_aereo (void){
     pthread_mutex_unlock (&mutex_insercion);   
   }
 
-  printf ("+++ fin radar\n"); /*debug*/
   pthread_exit(0);
 }
 
@@ -277,12 +313,12 @@ void torre_control (void){
       printf ("[CONTROL] Putting plane with id %d in track\n",avion->id_number);
       taken_off++;
       if (avion->last_flight == 0){
-      sleep (DELAY*avion->time_action);
+      sleep (avion->time_action);
       printf ("[CONTROL] Plane %d took off after %d seconds\n",avion->id_number,avion->time_action);
       }
       else{ /* si el avion es el ultimo vuelo del dia */
         printf ("[CONTROL] After plane with id %d the airport will be closed\n",avion->id_number);
-        sleep (DELAY*avion->time_action);
+        sleep (avion->time_action);
         printf ("[CONTROL] Plane %d took off after %d seconds\n",avion->id_number,avion->time_action);
         printf ("Airport Closed!\n");
       }
@@ -291,18 +327,18 @@ void torre_control (void){
       printf ("[CONTROL] Track is free for plane with id %d\n",avion->id_number);
       landed++;
       if (avion->last_flight == 0){
-        sleep (DELAY*avion->time_action);
+        sleep (avion->time_action);
         printf ("[CONTROL] Plane %d landed in %d seconds\n",avion->id_number,avion->time_action);
       }
       else{  /* si el avion es el ultimo vuelo del dia */
         printf ("[CONTROL] After plane with id %d the airport will be closed\n",avion->id_number);
-        sleep (DELAY*avion->time_action);
+        sleep (avion->time_action);
         printf ("[CONTROL] Plane %d landed in %d seconds\n",avion->id_number,avion->time_action);
         printf ("Airport Closed!\n");
       }
     }    
   }
-  FILE * fp;
+  FILE * fp; /* Fichero de resumen de actividad */
   fp = fopen ("resume.air", "w"); /* Crea o trunca el fichero para solo escritura */
   if (fp == NULL){
     printf ("ERROR al abrir/crear el fichero \"resume.air\".\n");
